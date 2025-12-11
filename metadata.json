@@ -1,0 +1,7 @@
+{
+  "name": "Kredmint.ai Dashboard",
+  "description": "AI Voice Agent platform for Kredmint financial services, featuring campaign management, analytics, and real-time voice agents.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
