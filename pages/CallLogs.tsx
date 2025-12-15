@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, X, FileText, Download, Play, MessageSquare, CheckSquare, Square } from 'lucide-react';
-import { getCallLogs } from '../utils/storage';
+import { Search, Filter, X, FileText, Download, Play, MessageSquare, CheckSquare, Square, RefreshCw, Activity } from 'lucide-react';
+import { getCallLogs, DATA_UPDATE_EVENT } from '../utils/storage';
 import { CallLog } from '../types';
 
 const EXPORT_COLUMNS = [
@@ -23,15 +23,28 @@ const CallLogs: React.FC = () => {
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
+  const [sentimentFilter, setSentimentFilter] = useState('All');
 
   // Export State
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [selectedColumns, setSelectedColumns] = useState<string[]>(EXPORT_COLUMNS.map(c => c.key));
 
-  useEffect(() => {
+  const fetchLogs = () => {
     const allLogs = getCallLogs();
     setLogs(allLogs);
-    setFilteredLogs(allLogs);
+  };
+
+  useEffect(() => {
+    // Initial fetch
+    fetchLogs();
+
+    // Listen for real-time updates
+    const handleUpdate = () => fetchLogs();
+    window.addEventListener(DATA_UPDATE_EVENT, handleUpdate);
+
+    return () => {
+      window.removeEventListener(DATA_UPDATE_EVENT, handleUpdate);
+    };
   }, []);
 
   useEffect(() => {
@@ -50,8 +63,12 @@ const CallLogs: React.FC = () => {
       result = result.filter(log => log.status === statusFilter);
     }
 
+    if (sentimentFilter !== 'All') {
+      result = result.filter(log => log.sentiment === sentimentFilter);
+    }
+
     setFilteredLogs(result);
-  }, [logs, searchQuery, statusFilter]);
+  }, [logs, searchQuery, statusFilter, sentimentFilter]);
 
   const toggleColumn = (key: string) => {
     if (selectedColumns.includes(key)) {
@@ -122,31 +139,42 @@ const CallLogs: React.FC = () => {
           <h1 className="text-2xl font-bold text-slate-900">Call Logs</h1>
           <p className="text-slate-500">Detailed history of all AI agent interactions.</p>
         </div>
-        <button 
-          onClick={handleExportClick}
-          className="flex items-center px-4 py-2 bg-white border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 font-medium shadow-sm transition-colors"
-        >
-          <Download size={18} className="mr-2" />
-          Export CSV
-        </button>
+        <div className="flex space-x-2">
+            <button 
+                onClick={fetchLogs}
+                className="flex items-center px-4 py-2 bg-white border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 font-medium shadow-sm transition-colors"
+            >
+                <RefreshCw size={18} className="mr-2" />
+                Refresh
+            </button>
+            <button 
+            onClick={handleExportClick}
+            className="flex items-center px-4 py-2 bg-indigo-600 border border-transparent rounded-lg text-white hover:bg-indigo-700 font-medium shadow-sm transition-colors"
+            >
+            <Download size={18} className="mr-2" />
+            Export CSV
+            </button>
+        </div>
       </div>
 
-      {/* Filters */}
+      {/* Filters with Black Background Inputs */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4">
         <div className="flex-1 relative">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={20} />
           <input 
             type="text" 
             placeholder="Search by customer, phone, or agent ID..." 
-            className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+            className="w-full pl-10 pr-4 py-2 border border-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-slate-900 text-white placeholder-slate-400"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
+        
+        {/* Status Filter */}
         <div className="w-full md:w-48 relative">
            <Filter className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={18} />
            <select 
-             className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none"
+             className="w-full pl-10 pr-4 py-2 border border-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none bg-slate-900 text-white"
              value={statusFilter}
              onChange={(e) => setStatusFilter(e.target.value)}
            >
@@ -157,13 +185,29 @@ const CallLogs: React.FC = () => {
              <option value="Busy">Busy</option>
            </select>
         </div>
+
+        {/* Sentiment Filter (New) */}
+        <div className="w-full md:w-48 relative">
+           <Activity className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={18} />
+           <select 
+             className="w-full pl-10 pr-4 py-2 border border-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none appearance-none bg-slate-900 text-white"
+             value={sentimentFilter}
+             onChange={(e) => setSentimentFilter(e.target.value)}
+           >
+             <option value="All">All Sentiments</option>
+             <option value="Positive">Positive</option>
+             <option value="Neutral">Neutral</option>
+             <option value="Negative">Negative</option>
+           </select>
+        </div>
       </div>
 
       {/* Table */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm text-slate-600">
-            <thead className="bg-slate-50 text-xs uppercase font-semibold text-slate-500">
+             {/* Header Updated to Black background with White text */}
+            <thead className="bg-slate-900 text-xs uppercase font-semibold text-white">
               <tr>
                 <th className="px-6 py-4">Customer</th>
                 <th className="px-6 py-4">Agent ID</th>
@@ -192,15 +236,14 @@ const CallLogs: React.FC = () => {
                   </td>
                   <td className="px-6 py-4">{log.duration}</td>
                    <td className="px-6 py-4">
-                     <span className={`inline-flex items-center gap-1
-                      ${log.sentiment === 'Positive' ? 'text-green-600' : 
-                        log.sentiment === 'Negative' ? 'text-red-600' : 
-                        'text-slate-500'}`}>
-                        {log.sentiment === 'Positive' && '😊'}
-                        {log.sentiment === 'Neutral' && '😐'}
-                        {log.sentiment === 'Negative' && '😠'}
-                        {log.sentiment}
-                    </span>
+                     <div 
+                        className={`w-4 h-4 rounded-full ${
+                            log.sentiment === 'Positive' ? 'bg-yellow-400' : 
+                            log.sentiment === 'Negative' ? 'bg-red-500' : 
+                            'bg-green-500'
+                        }`} 
+                        title={`Sentiment: ${log.sentiment}`}
+                    />
                   </td>
                   <td className="px-6 py-4 text-slate-400">{log.timestamp}</td>
                   <td className="px-6 py-4">
@@ -228,10 +271,6 @@ const CallLogs: React.FC = () => {
         </div>
         <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 text-xs text-slate-500 flex justify-between items-center">
           <span>Showing {filteredLogs.length} entries</span>
-          <div className="flex gap-2">
-            <button disabled className="px-3 py-1 border rounded bg-white text-slate-300 cursor-not-allowed">Previous</button>
-            <button disabled className="px-3 py-1 border rounded bg-white text-slate-300 cursor-not-allowed">Next</button>
-          </div>
         </div>
       </div>
 
@@ -325,10 +364,17 @@ const CallLogs: React.FC = () => {
 
                  <div className="bg-slate-50 p-3 rounded-lg text-sm">
                     <div className="text-slate-500 text-xs uppercase mb-1">Sentiment Analysis</div>
-                    <div className="font-medium flex items-center">
-                         {selectedLog.sentiment === 'Positive' && '😊 Positive'}
-                        {selectedLog.sentiment === 'Neutral' && '😐 Neutral'}
-                        {selectedLog.sentiment === 'Negative' && '😠 Negative'}
+                    <div className="flex items-center space-x-2">
+                         <div 
+                            className={`w-6 h-6 rounded-full ${
+                                selectedLog.sentiment === 'Positive' ? 'bg-yellow-400' : 
+                                selectedLog.sentiment === 'Negative' ? 'bg-red-500' : 
+                                'bg-green-500'
+                            }`}
+                         />
+                         <span className="text-slate-600 font-medium">
+                            {selectedLog.sentiment} (Indicated by Color)
+                         </span>
                     </div>
                   </div>
 

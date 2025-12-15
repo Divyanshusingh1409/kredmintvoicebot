@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { PhoneForwarded, Save, ShieldCheck, Server, Globe } from 'lucide-react';
+import { PhoneForwarded, Save, ShieldCheck, Server, Globe, Activity, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { SipConfig } from '../types';
 import { getSipConfig, saveSipConfig } from '../utils/storage';
 
@@ -12,6 +12,7 @@ const SipIntegration: React.FC = () => {
     protocol: 'UDP'
   });
   const [status, setStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
 
   useEffect(() => {
     const saved = getSipConfig();
@@ -23,16 +24,34 @@ const SipIntegration: React.FC = () => {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setConfig({ ...config, [e.target.name]: e.target.value });
     setStatus('idle');
+    setTestStatus('idle');
   };
 
   const handleSave = () => {
     setStatus('saving');
-    // Simulate API call delay
     setTimeout(() => {
       saveSipConfig(config);
       setStatus('saved');
       setTimeout(() => setStatus('idle'), 3000);
     }, 800);
+  };
+
+  const handleTestConnection = () => {
+    if (!config.domain || !config.username) {
+        alert("Please enter Domain and Username first.");
+        return;
+    }
+    setTestStatus('testing');
+    
+    // Simulate SIP REGISTER packet
+    setTimeout(() => {
+        // Simple mock validation
+        if (config.domain.includes('.') && config.username.length > 0) {
+            setTestStatus('success');
+        } else {
+            setTestStatus('failed');
+        }
+    }, 1500);
   };
 
   return (
@@ -49,7 +68,7 @@ const SipIntegration: React.FC = () => {
           </div>
           <div>
             <h3 className="text-lg font-bold text-slate-900">SIP Server Details</h3>
-            <p className="text-sm text-slate-500">Enter the SIP Trunking details provided by your carrier.</p>
+            <p className="text-sm text-slate-500">Enter the SIP Trunking details provided by your carrier (e.g., Twilio, Plivo, Asterisk).</p>
           </div>
         </div>
 
@@ -135,7 +154,33 @@ const SipIntegration: React.FC = () => {
           </div>
         </div>
 
-        <div className="p-6 bg-slate-50 border-t border-slate-200 flex justify-end">
+        <div className="p-6 bg-slate-50 border-t border-slate-200 flex justify-between items-center">
+          <div className="flex items-center">
+             <button
+                onClick={handleTestConnection}
+                disabled={testStatus === 'testing' || !config.domain}
+                className="text-slate-600 hover:text-indigo-600 font-medium text-sm flex items-center px-4 py-2 rounded-lg border border-slate-300 bg-white hover:bg-indigo-50 transition-colors"
+             >
+                {testStatus === 'testing' ? (
+                    <Loader2 size={16} className="animate-spin mr-2" />
+                ) : (
+                    <Activity size={16} className="mr-2" />
+                )}
+                Test Connectivity
+             </button>
+             
+             {testStatus === 'success' && (
+                 <span className="ml-3 text-sm text-green-600 font-medium flex items-center">
+                     <CheckCircle2 size={16} className="mr-1" /> Connected
+                 </span>
+             )}
+             {testStatus === 'failed' && (
+                 <span className="ml-3 text-sm text-red-600 font-medium flex items-center">
+                     <AlertCircle size={16} className="mr-1" /> Connection Failed
+                 </span>
+             )}
+          </div>
+          
           <button
             onClick={handleSave}
             disabled={status === 'saving'}

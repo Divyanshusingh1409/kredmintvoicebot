@@ -11,7 +11,7 @@ import {
   LineChart,
   Line
 } from 'recharts';
-import { Phone, PhoneIncoming, Clock, Activity, Play, X, Download, FileText, MessageSquare, RefreshCw } from 'lucide-react';
+import { Phone, PhoneIncoming, Clock, Activity, Play, X, Download, FileText, MessageSquare, RefreshCw, CalendarClock, Loader2, Check } from 'lucide-react';
 import { getCallLogs, DATA_UPDATE_EVENT } from '../utils/storage';
 import { CallLog } from '../types';
 
@@ -59,6 +59,10 @@ const Dashboard: React.FC = () => {
   const [selectedLog, setSelectedLog] = useState<CallLog | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   
+  // Reschedule Logic State
+  const [reschedulingId, setReschedulingId] = useState<string | null>(null);
+  const [rescheduledIds, setRescheduledIds] = useState<Set<string>>(new Set());
+  
   // Computed Stats
   const [stats, setStats] = useState({
     totalCalls: 0,
@@ -102,26 +106,29 @@ const Dashboard: React.FC = () => {
         totalCalls: total,
         connectedCalls: connected,
         avgDuration: formatSecondsToDuration(avgSeconds),
-        activeCalls: Math.max(recentActive, Math.floor(Math.random() * 5)) // Mock active count base
+        activeCalls: recentActive
     });
 
-    // 2. Generate Chart Data (Last 7 days logic simulated by grouping mock data timestamps)
-    // In a real app, we would group by actual dates. Here we mock groupings based on existing log count.
-    
+    // 2. Generate Chart Data based on ACTUAL Data
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const today = new Date().getDay();
-    
     const newChartData = [];
+    
+    // Initialize last 7 days with 0
     for(let i=6; i>=0; i--) {
         const d = new Date();
         d.setDate(d.getDate() - i);
         const dayName = days[d.getDay()];
-        
-        // Mock distribution based on total logs to make charts look populated
-        // This makes the chart deterministic based on data volume but distributed over days
-        const seed = total + i; 
-        const dailyCalls = Math.floor((total / 7) + (seed % 10)); 
-        const dailyConnected = Math.floor(dailyCalls * 0.7);
+        const dateString = d.toLocaleDateString(); // Simple matching
+
+        // Aggregate actual logs for this day
+        // Note: logs.timestamp format is LocaleString, so we do a simple day comparison
+        const dayLogs = allLogs.filter(l => {
+            const logDate = new Date(l.timestamp);
+            return logDate.getDay() === d.getDay() && logDate.getDate() === d.getDate();
+        });
+
+        const dailyCalls = dayLogs.length;
+        const dailyConnected = dayLogs.filter(l => l.status === 'Connected').length;
         const dailyFailed = dailyCalls - dailyConnected;
 
         newChartData.push({
@@ -142,19 +149,20 @@ const Dashboard: React.FC = () => {
     const handleUpdate = () => processData();
     window.addEventListener(DATA_UPDATE_EVENT, handleUpdate);
 
-    // Polling for "Active Calls" simulation
-    const interval = setInterval(() => {
-        setStats(prev => ({
-            ...prev,
-            activeCalls: Math.max(0, prev.activeCalls + (Math.random() > 0.5 ? 1 : -1))
-        }));
-    }, 5000);
-
     return () => {
         window.removeEventListener(DATA_UPDATE_EVENT, handleUpdate);
-        clearInterval(interval);
     };
   }, []);
+
+  const handleReschedule = (log: CallLog) => {
+    setReschedulingId(log.id);
+    // Simulate API Call delay
+    setTimeout(() => {
+        setReschedulingId(null);
+        setRescheduledIds(prev => new Set(prev).add(log.id));
+        // Optional: Trigger a notification
+    }, 1500);
+  };
 
   const downloadTranscript = (log: CallLog) => {
     if (!log.transcript) return;
@@ -185,7 +193,7 @@ const Dashboard: React.FC = () => {
         <StatCard 
           title="Total Calls" 
           value={stats.totalCalls.toLocaleString()} 
-          subtext="+12%" 
+          subtext="0%" 
           icon={Phone} 
           color="bg-blue-500" 
         />
@@ -216,8 +224,8 @@ const Dashboard: React.FC = () => {
         {/* Main Chart */}
         <div className="lg:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-sm min-w-0">
           <h3 className="text-lg font-bold text-slate-900 mb-6">Call Volume Analytics (Last 7 Days)</h3>
-          <div className="h-80 w-full">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+          <div style={{ width: '100%', height: 320 }}>
+            <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
                 <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748B'}} />
@@ -236,8 +244,8 @@ const Dashboard: React.FC = () => {
         {/* Secondary Chart */}
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm min-w-0">
           <h3 className="text-lg font-bold text-slate-900 mb-6">Success Rate Trend</h3>
-          <div className="h-80 w-full">
-             <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+          <div style={{ width: '100%', height: 320 }}>
+             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
                 <XAxis dataKey="name" hide />
@@ -266,13 +274,15 @@ const Dashboard: React.FC = () => {
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm text-slate-600">
-            <thead className="bg-white text-xs uppercase font-semibold text-slate-500 border-b border-slate-100">
+            {/* Header Updated to Black background with White text */}
+            <thead className="bg-slate-900 text-xs uppercase font-semibold text-white border-b border-slate-700">
               <tr>
                 <th className="px-6 py-4">Customer</th>
                 <th className="px-6 py-4">Status</th>
                 <th className="px-6 py-4">Duration</th>
                 <th className="px-6 py-4">Sentiment</th>
                 <th className="px-6 py-4">Timestamp</th>
+                <th className="px-6 py-4">Reschedule</th>
                 <th className="px-6 py-4">Action</th>
               </tr>
             </thead>
@@ -293,21 +303,48 @@ const Dashboard: React.FC = () => {
                   </td>
                   <td className="px-6 py-4 font-mono text-xs">{log.duration}</td>
                   <td className="px-6 py-4">
-                     <span className={`inline-flex items-center gap-1 font-medium
-                      ${log.sentiment === 'Positive' ? 'text-green-600' : 
-                        log.sentiment === 'Negative' ? 'text-red-600' : 
-                        'text-slate-500'}`}>
-                        {log.sentiment === 'Positive' && '😊'}
-                        {log.sentiment === 'Neutral' && '😐'}
-                        {log.sentiment === 'Negative' && '😠'}
-                        {log.sentiment}
-                    </span>
+                    <div 
+                        className={`w-4 h-4 rounded-full ${
+                            log.sentiment === 'Positive' ? 'bg-yellow-400' : 
+                            log.sentiment === 'Negative' ? 'bg-red-500' : 
+                            'bg-green-500'
+                        }`} 
+                        title={`Sentiment: ${log.sentiment}`}
+                    />
                   </td>
                   <td className="px-6 py-4 text-slate-400 text-xs">{log.timestamp}</td>
+                  {/* Reschedule Logic Column */}
+                  <td className="px-6 py-4">
+                    {(log.status === 'Failed' || log.sentiment === 'Negative') && (
+                        <>
+                            {rescheduledIds.has(log.id) ? (
+                                <span className="inline-flex items-center text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
+                                    <Check size={12} className="mr-1" /> Queued
+                                </span>
+                            ) : (
+                                <button 
+                                    onClick={() => handleReschedule(log)}
+                                    disabled={reschedulingId === log.id}
+                                    className="flex items-center text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                                    title="Reschedule Call"
+                                >
+                                    {reschedulingId === log.id ? (
+                                        <Loader2 size={14} className="animate-spin" />
+                                    ) : (
+                                        <>
+                                            <CalendarClock size={14} className="mr-1.5" />
+                                            Reschedule
+                                        </>
+                                    )}
+                                </button>
+                            )}
+                        </>
+                    )}
+                  </td>
                   <td className="px-6 py-4">
                     <button 
                       onClick={() => setSelectedLog(log)}
-                      className="text-indigo-600 hover:text-indigo-900 font-medium text-xs flex items-center bg-indigo-50 px-2 py-1 rounded hover:bg-indigo-100"
+                      className="text-slate-600 hover:text-slate-900 font-medium text-xs flex items-center bg-slate-100 px-2 py-1 rounded hover:bg-slate-200"
                     >
                        Details
                     </button>
@@ -316,7 +353,7 @@ const Dashboard: React.FC = () => {
               ))}
               {logs.length === 0 && (
                   <tr>
-                      <td colSpan={6} className="text-center py-8 text-slate-400 italic">No recent calls recorded.</td>
+                      <td colSpan={7} className="text-center py-8 text-slate-400 italic">No recent calls recorded.</td>
                   </tr>
               )}
             </tbody>
@@ -358,10 +395,17 @@ const Dashboard: React.FC = () => {
 
                  <div className="bg-slate-50 p-3 rounded-lg text-sm">
                     <div className="text-slate-500 text-xs uppercase mb-1">Sentiment Analysis</div>
-                    <div className="font-medium flex items-center">
-                         {selectedLog.sentiment === 'Positive' && '😊 Positive'}
-                        {selectedLog.sentiment === 'Neutral' && '😐 Neutral'}
-                        {selectedLog.sentiment === 'Negative' && '😠 Negative'}
+                     <div className="flex items-center space-x-2">
+                         <div 
+                            className={`w-6 h-6 rounded-full ${
+                                selectedLog.sentiment === 'Positive' ? 'bg-yellow-400' : 
+                                selectedLog.sentiment === 'Negative' ? 'bg-red-500' : 
+                                'bg-green-500'
+                            }`}
+                         />
+                         <span className="text-slate-600 font-medium">
+                            {selectedLog.sentiment} (Indicated by Color)
+                         </span>
                     </div>
                   </div>
 

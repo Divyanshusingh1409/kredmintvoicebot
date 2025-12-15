@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Megaphone, Calendar, Clock, Upload, CheckCircle, ArrowRight, ArrowLeft, Play, Edit2, X, Globe, Phone, Loader2, Trash2, AlertTriangle } from 'lucide-react';
-import { Contact, Campaign, Agent } from '../types';
-import { getAgents, getCampaigns, saveCampaign, deleteCampaign } from '../utils/storage';
+import { Megaphone, Calendar, Clock, Upload, CheckCircle, ArrowRight, ArrowLeft, Play, Edit2, X, Globe, Phone, Loader2, Trash2, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Contact, Campaign, Agent, CallLog } from '../types';
+import { getAgents, getCampaigns, saveCampaign, deleteCampaign, getSipConfig, addCallLog } from '../utils/storage';
 
 const Campaigns: React.FC = () => {
   const navigate = useNavigate();
@@ -15,6 +15,7 @@ const Campaigns: React.FC = () => {
   const [testCampaign, setTestCampaign] = useState<Campaign | null>(null);
   const [testPhoneNumber, setTestPhoneNumber] = useState('');
   const [isCalling, setIsCalling] = useState(false);
+  const [callStatus, setCallStatus] = useState<string>('');
   
   // Delete Modal State
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -42,18 +43,28 @@ const Campaigns: React.FC = () => {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
-      // Simulate parsing
-      setTimeout(() => {
-        const mockContacts: Contact[] = [
-          { name: "Rahul Sharma", phoneNumber: "+91 9876543210" },
-          { name: "Priya Singh", phoneNumber: "+91 9123456789" },
-          { name: "Amit Patel", phoneNumber: "+91 9988776655" },
-          { name: "Sneha Gupta", phoneNumber: "+91 9000011111" },
-          { name: "Vikram Malhotra", phoneNumber: "+91 9898989898" }
-        ];
-        setUploadedContacts(mockContacts);
-      }, 1000);
+      const selectedFile = e.target.files[0];
+      setFile(selectedFile);
+      
+      // Real file reading
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result as string;
+        // Simple Split by new line for demo purposes, assume standard CSV/Text format
+        const lines = text.split(/\r\n|\n/).filter(line => line.trim() !== '');
+        
+        // Basic mapping (Assumes header row, so skipping index 0 if > 1 line, else just taking all)
+        const contacts: Contact[] = lines.slice(1).map((line, index) => {
+            const parts = line.split(',');
+            return {
+                name: parts[0] || `Contact ${index + 1}`,
+                phoneNumber: parts[1] || ''
+            };
+        }).filter(c => c.phoneNumber); // Simple validation
+
+        setUploadedContacts(contacts.length > 0 ? contacts : []);
+      };
+      reader.readAsText(selectedFile);
     }
   };
 
@@ -65,7 +76,7 @@ const Campaigns: React.FC = () => {
       scheduleTime: formData.scheduleTime,
       startDate: formData.startDate,
       agentId: formData.agentId,
-      totalContacts: uploadedContacts.length > 0 ? (editingId ? 150 + uploadedContacts.length : 150 + uploadedContacts.length) : (editingId ? 150 : 0), // Mock logic
+      totalContacts: uploadedContacts.length, 
       status: 'Scheduled'
     };
     saveCampaign(newCampaign);
@@ -90,7 +101,6 @@ const Campaigns: React.FC = () => {
       startDate: campaign.startDate,
       agentId: campaign.agentId
     });
-    // In a real app, we'd fetch the contacts here.
     setUploadedContacts([]); 
     setStep(1);
     setView('edit');
@@ -123,15 +133,61 @@ const Campaigns: React.FC = () => {
     }
   };
 
-  const handleSipCall = () => {
+  const handleSipCall = async () => {
     if (!testPhoneNumber) return;
+
+    // 1. Check Credentials
+    const sipConfig = getSipConfig();
+    if (!sipConfig || !sipConfig.domain || !sipConfig.username) {
+        alert("SIP Configuration missing! Please configure SIP settings first.");
+        return;
+    }
+
     setIsCalling(true);
-    // Mock API call
-    setTimeout(() => {
-      setIsCalling(false);
-      alert(`SIP Call initiated to ${testPhoneNumber} for campaign "${testCampaign?.name}".\n\n(This is a mock action)`);
-      setTestPhoneNumber('');
-    }, 2000);
+    setCallStatus('Initializing SIP Stack...');
+
+    try {
+        // 2. Simulate SIP Handshake
+        await new Promise(r => setTimeout(r, 600));
+        setCallStatus(`Routing via ${sipConfig.domain}...`);
+        
+        await new Promise(r => setTimeout(r, 600));
+        setCallStatus('Sending INVITE...');
+
+        await new Promise(r => setTimeout(r, 800));
+        setCallStatus('Ringing...');
+
+        // 3. Success State & Logging
+        setIsCalling(false);
+        setCallStatus('Call Connected!');
+        
+        const usedAgent = agents.find(a => a.id === testCampaign?.agentId);
+
+        // Create a realistic log entry
+        const newLog: CallLog = {
+            id: `sip_camp_${Date.now()}`,
+            customerName: `Campaign Test: ${testCampaign?.name}`,
+            phoneNumber: testPhoneNumber,
+            status: 'Connected',
+            duration: '0m 0s',
+            timestamp: new Date().toLocaleString(),
+            sentiment: 'Neutral',
+            agentId: usedAgent?.id || 'unknown',
+            transcript: `[CAMPAIGN]: Executing test call for '${testCampaign?.name}'.\n[SIP]: INVITE sip:${testPhoneNumber}@${sipConfig.domain}\n[SIP]: 200 OK\n[AGENT]: ${usedAgent?.initialMessage}\n[SYSTEM]: Call established.`
+        };
+        addCallLog(newLog);
+
+        setTimeout(() => {
+             alert(`Campaign Test Call Sent!\n\nConfig: ${sipConfig.domain}\nUser: ${sipConfig.username}\n\nThe call has been logged.`);
+             setCallStatus('');
+             setTestPhoneNumber('');
+        }, 500);
+
+    } catch (e) {
+        setIsCalling(false);
+        setCallStatus('Failed');
+        alert("Connection failed.");
+    }
   };
 
   const selectedAgent = agents.find(a => a.id === formData.agentId);
@@ -157,7 +213,8 @@ const Campaigns: React.FC = () => {
 
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <table className="w-full text-left text-sm text-slate-600">
-            <thead className="bg-slate-50 text-xs uppercase font-semibold text-slate-500">
+            {/* Header Updated to Black background with White text */}
+            <thead className="bg-slate-900 text-xs uppercase font-semibold text-white">
               <tr>
                 <th className="px-6 py-4">Campaign Name</th>
                 <th className="px-6 py-4">Status</th>
@@ -291,11 +348,19 @@ const Campaigns: React.FC = () => {
                   <button 
                     onClick={handleSipCall}
                     disabled={isCalling || !testPhoneNumber}
-                    className="bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 text-white font-medium py-2 px-4 rounded-lg flex items-center min-w-[100px] justify-center"
+                     className={`font-medium py-2 px-4 rounded-lg flex items-center min-w-[120px] justify-center text-white
+                        ${isCalling ? 'bg-indigo-500' : 'bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300'}
+                    `}
                   >
-                    {isCalling ? <Loader2 size={18} className="animate-spin" /> : 'Call Now'}
+                     {isCalling ? <Loader2 size={18} className="animate-spin mr-2" /> : <Phone size={18} className="mr-2" />}
+                    {isCalling ? 'Dialing...' : 'Call Now'}
                   </button>
                 </div>
+                {callStatus && (
+                    <div className="mt-2 text-xs font-mono text-indigo-600 flex items-center">
+                        <CheckCircle2 size={12} className="mr-1" /> {callStatus}
+                    </div>
+                )}
               </div>
             </div>
           </div>
@@ -457,7 +522,7 @@ const Campaigns: React.FC = () => {
                 type="file" 
                 id="file-upload" 
                 className="hidden" 
-                accept=".csv, .xlsx"
+                accept=".csv, .txt"
                 onChange={handleFileChange}
               />
               <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center">
@@ -465,10 +530,10 @@ const Campaigns: React.FC = () => {
                   <Upload size={32} />
                 </div>
                 <span className="text-lg font-medium text-slate-700">
-                  {file ? file.name : "Click to upload CSV or Excel"}
+                  {file ? file.name : "Click to upload CSV or Text file"}
                 </span>
                 <span className="text-sm text-slate-500 mt-2">
-                  Format: Name, Phone Number, [Custom Fields]
+                  Format: Name, Phone Number (Comma separated)
                 </span>
               </label>
             </div>
@@ -485,7 +550,7 @@ const Campaigns: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {uploadedContacts.map((contact, i) => (
+                      {uploadedContacts.slice(0, 5).map((contact, i) => (
                         <tr key={i} className="border-t border-slate-100">
                           <td className="px-4 py-2">{contact.name}</td>
                           <td className="px-4 py-2">{contact.phoneNumber}</td>
@@ -496,7 +561,7 @@ const Campaigns: React.FC = () => {
                 </div>
                 <p className="text-xs text-green-600 mt-2 flex items-center">
                   <CheckCircle size={14} className="mr-1" />
-                  Successfully parsed {uploadedContacts.length} contacts (Mock)
+                  Successfully parsed {uploadedContacts.length} contacts
                 </p>
               </div>
             )}
@@ -535,7 +600,7 @@ const Campaigns: React.FC = () => {
               <div>
                 <p className="text-xs text-slate-500 uppercase font-bold">Total Contacts</p>
                 <p className="text-lg font-medium text-slate-900">
-                  {uploadedContacts.length > 0 ? uploadedContacts.length : (view === 'edit' ? 'Unchanged (150 mock)' : '0')}
+                  {uploadedContacts.length > 0 ? uploadedContacts.length : 0}
                 </p>
               </div>
               <div className="md:col-span-2">

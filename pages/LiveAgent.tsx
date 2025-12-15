@@ -11,7 +11,9 @@ function createBlob(data: Float32Array): GenAIBlob {
   const l = data.length;
   const int16 = new Int16Array(l);
   for (let i = 0; i < l; i++) {
-    int16[i] = data[i] * 32768;
+    // Clamp values to [-1, 1] before scaling to avoid distortion artifacts
+    const clamped = Math.max(-1, Math.min(1, data[i]));
+    int16[i] = clamped * 0x7FFF;
   }
   return {
     data: encode(new Uint8Array(int16.buffer)),
@@ -45,7 +47,8 @@ async function decodeAudioData(
   sampleRate: number,
   numChannels: number,
 ): Promise<AudioBuffer> {
-  const dataInt16 = new Int16Array(data.buffer);
+  // Safe creation of Int16Array from Uint8Array source
+  const dataInt16 = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
   const frameCount = dataInt16.length / numChannels;
   const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
 
@@ -58,11 +61,11 @@ async function decodeAudioData(
   return buffer;
 }
 
-// Voice Mapping Logic
+// Voice Mapping Logic (Updated to supported voices: Puck, Charon, Kore, Fenrir, Zephyr)
 const getGeminiVoiceName = (voiceId: string) => {
   switch(voiceId) {
-    case 'female_1': return 'Aoede';
-    case 'female_2': return 'Fenrir';
+    case 'female_1': return 'Kore';
+    case 'female_2': return 'Zephyr';
     case 'male_1': return 'Charon';
     default: return 'Puck';
   }
@@ -86,14 +89,21 @@ const LiveAgent: React.FC = () => {
   const nextStartTimeRef = useRef<number>(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   
-  // Recording Refs
+  // Recording Refs (Mixed)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const startTimeRef = useRef<number>(0);
+  const recordingDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   
   // Session handling
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+
+  // Transcript Accumulators
+  const conversationHistoryRef = useRef<string[]>([]);
+  const currentTurnInputRef = useRef<string>('');
+  const currentTurnOutputRef = useRef<string>('');
 
   // Check for API Key on Mount
   useEffect(() => {
@@ -107,8 +117,26 @@ const LiveAgent: React.FC = () => {
     checkApiKey();
   }, []);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      handleDisconnect();
+    };
+  }, []);
+
   const addLog = (msg: string) => {
     setLogs(prev => [...prev.slice(-4), msg]);
+  };
+
+  const addConversationLog = (role: 'User' | 'Agent', text: string) => {
+      const entry = `${role}: ${text}`;
+      conversationHistoryRef.current.push(entry);
+      // Also show in the small terminal overlay if it's short
+      if (text.length < 50) {
+        addLog(entry);
+      } else {
+        addLog(`${role}: ${text.substring(0, 40)}...`);
+      }
   };
 
   const handleSelectKey = async () => {
@@ -125,26 +153,63 @@ const LiveAgent: React.FC = () => {
           await handleSelectKey();
       }
 
+      const apiKey = process.env.API_KEY;
+      if (!apiKey) {
+          throw new Error("API key not found in environment. Please select a valid key.");
+      }
+
       setStatus('Connecting');
       addLog('Initializing audio contexts...');
 
-      // 1. Initialize Audio Contexts
-      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      // 1. Initialize Audio Contexts with Interactive Latency Hint
+      // Input: 16kHz for sending to model
+      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ 
+          sampleRate: 16000,
+          latencyHint: 'interactive'
+      });
+      // Output: Default rate (e.g. 48kHz) to work well with hardware and mix recording
+      const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({
+          latencyHint: 'interactive'
+      }); 
       
+      // Explicitly resume contexts to ensure they are active (Autoplay policy)
+      if (inputCtx.state === 'suspended') await inputCtx.resume();
+      if (outputCtx.state === 'suspended') await outputCtx.resume();
+
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
       
+      // Output Node (Bot Speaker)
       const outputNode = outputCtx.createGain();
-      outputNode.connect(outputCtx.destination);
+      outputNode.connect(outputCtx.destination); // Connect to speakers
       outputNodeRef.current = outputNode;
 
       // 2. Get Microphone Stream
       addLog('Requesting microphone access...');
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1
+          } 
+      });
 
-      // Initialize Recorder on the Mic Stream
-      const recorder = new MediaRecorder(stream);
+      // 3. Setup Mixed Recording (Mic + Bot)
+      const recordingDest = outputCtx.createMediaStreamDestination();
+      recordingDestRef.current = recordingDest;
+
+      // Add Bot Audio to Recording (Connect outputNode to recording destination)
+      outputNode.connect(recordingDest);
+
+      // Add Mic Audio to Recording (Create source in outputCtx to mix it)
+      // Note: Since outputCtx is default rate, this works fine even if stream is different rate.
+      const micSourceForRecord = outputCtx.createMediaStreamSource(stream);
+      micSourceForRecord.connect(recordingDest);
+      micSourceRef.current = micSourceForRecord;
+
+      // Initialize Recorder with Mixed Stream
+      const recorder = new MediaRecorder(recordingDest.stream);
       mediaRecorderRef.current = recorder;
       recordedChunksRef.current = [];
       recorder.ondataavailable = (e) => {
@@ -153,17 +218,18 @@ const LiveAgent: React.FC = () => {
       recorder.start();
       startTimeRef.current = Date.now();
 
-      // 3. Initialize Gemini Client
-      // Create a new instance right before making the call to ensure it uses the latest key
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      // 4. Initialize Gemini Client
+      const ai = new GoogleGenAI({ apiKey });
 
-      // 4. Connect to Live API
+      // 5. Connect to Live API
       addLog(`Connecting to Agent: ${testAgent?.name || 'Default'}...`);
       
-      // Configure System Instruction: Prepend agent instruction + Initial Message directive
       let systemInstruction = testAgent?.instructions || KREDMINT_SYSTEM_PROMPT;
+      // Latency Optimization: Instruct model to be concise and fast
+      systemInstruction += `\n\nLATENCY OPTIMIZATION: Speak concisely. Do not use filler words. Respond immediately.`;
+      
       if (testAgent?.initialMessage) {
-        systemInstruction += `\n\nIMPORTANT: Start the conversation by saying exactly this: "${testAgent.initialMessage}"`;
+        systemInstruction += `\n\nStart the conversation by saying exactly: "${testAgent.initialMessage}"`;
       }
 
       const voiceName = testAgent ? getGeminiVoiceName(testAgent.voiceId) : 'Kore';
@@ -176,19 +242,23 @@ const LiveAgent: React.FC = () => {
             setStatus('Live');
             setIsConnected(true);
 
-            // Setup Input Stream Processing
+            // Setup Input Stream Processing for sending to API (using inputCtx)
             const source = inputCtx.createMediaStreamSource(stream);
+            // OPTIMIZATION FIXED: Increase buffer size to 4096 to prevent "crackling/fat fat" audio (buffer underrun)
+            // While 512 is lower latency, it is unstable on main thread. 4096 ensures smooth audio.
             const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
             
             scriptProcessor.onaudioprocess = (e) => {
-              if (isMuted) return; // Don't send data if muted locally
+              if (isMuted) return; 
               
               const inputData = e.inputBuffer.getChannelData(0);
               
-              // Simple volume meter viz
+              // Volume Viz
               let sum = 0;
-              for(let i=0; i<inputData.length; i++) sum += Math.abs(inputData[i]);
-              setCurrentVolume(Math.min(100, (sum / inputData.length) * 5000));
+              // Optimization: Sample fewer points for volume viz to save CPU
+              for(let i=0; i<inputData.length; i+=8) sum += Math.abs(inputData[i]);
+              const avg = sum / (inputData.length / 8);
+              setCurrentVolume(Math.min(100, avg * 5000));
 
               const pcmBlob = createBlob(inputData);
               sessionPromise.then(session => {
@@ -199,7 +269,6 @@ const LiveAgent: React.FC = () => {
             source.connect(scriptProcessor);
             scriptProcessor.connect(inputCtx.destination);
 
-            // Save cleanup closure
             cleanupRef.current = () => {
               source.disconnect();
               scriptProcessor.disconnect();
@@ -207,46 +276,91 @@ const LiveAgent: React.FC = () => {
             };
           },
           onmessage: async (msg: LiveServerMessage) => {
-            // Handle Audio Output
-            const base64Audio = msg.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-            if (base64Audio && outputCtx && outputNode) {
-              const audioBuffer = await decodeAudioData(
-                decode(base64Audio),
-                outputCtx,
-                24000,
-                1
-              );
-              
-              const source = outputCtx.createBufferSource();
-              source.buffer = audioBuffer;
-              source.connect(outputNode);
-              
-              // Simple audio scheduling
-              const now = outputCtx.currentTime;
-              const startTime = Math.max(nextStartTimeRef.current, now);
-              source.start(startTime);
-              nextStartTimeRef.current = startTime + audioBuffer.duration;
-              
-              sourcesRef.current.add(source);
-              source.onended = () => sourcesRef.current.delete(source);
-            }
+             const serverContent = msg.serverContent;
+
+             // Handle Audio Output
+             if (serverContent?.modelTurn?.parts) {
+                for (const part of serverContent.modelTurn.parts) {
+                    if (part.inlineData?.data) {
+                        const base64Audio = part.inlineData.data;
+                        if (outputCtx && outputNode) {
+                            try {
+                                const audioBuffer = await decodeAudioData(
+                                    decode(base64Audio),
+                                    outputCtx,
+                                    24000, // Gemini Output Rate
+                                    1
+                                );
+                                
+                                const source = outputCtx.createBufferSource();
+                                source.buffer = audioBuffer;
+                                source.connect(outputNode);
+                                
+                                const now = outputCtx.currentTime;
+                                // Scheduled playback to prevent overlap/gaps
+                                const startTime = Math.max(nextStartTimeRef.current, now);
+                                
+                                // Prevent massive drift if the buffer gets too far ahead
+                                if (startTime > now + 0.5) {
+                                    nextStartTimeRef.current = now;
+                                }
+
+                                source.start(startTime);
+                                nextStartTimeRef.current = startTime + audioBuffer.duration;
+                                
+                                sourcesRef.current.add(source);
+                                source.onended = () => sourcesRef.current.delete(source);
+                            } catch (e) {
+                                console.error("Error decoding audio:", e);
+                            }
+                        }
+                    }
+                }
+             }
 
             // Handle Interruptions
-            if (msg.serverContent?.interrupted) {
-              addLog('Model interrupted by user.');
+            if (serverContent?.interrupted) {
+              addLog('Model interrupted.');
               sourcesRef.current.forEach(s => s.stop());
               sourcesRef.current.clear();
               nextStartTimeRef.current = 0;
             }
+
+            // Handle Transcriptions
+            const inputTranscript = serverContent?.inputTranscription?.text;
+            if (inputTranscript) {
+               currentTurnInputRef.current += inputTranscript;
+            }
+
+            const outputTranscript = serverContent?.outputTranscription?.text;
+            if (outputTranscript) {
+                currentTurnOutputRef.current += outputTranscript;
+            }
+
+            // Commit turns when complete (Live API turn detection)
+            if (serverContent?.turnComplete) {
+                if (currentTurnInputRef.current.trim()) {
+                    addConversationLog('User', currentTurnInputRef.current);
+                    currentTurnInputRef.current = '';
+                }
+                if (currentTurnOutputRef.current.trim()) {
+                    addConversationLog('Agent', currentTurnOutputRef.current);
+                    currentTurnOutputRef.current = '';
+                }
+            }
           },
-          onclose: () => {
-            addLog('Session closed.');
+          onclose: (e) => {
+            addLog(`Session closed. Code: ${e.code}`);
             handleDisconnect();
           },
-          onerror: (err) => {
+          onerror: (err: any) => {
             console.error(err);
-            addLog(`Error: ${err.message || 'Network error'}`);
+            const message = err.message || 'Network error';
+            addLog(`Error: ${message}`);
             setStatus('Error');
+            if (message.includes('401') || message.includes('403') || message.includes('API key')) {
+                 setNeedsApiKey(true);
+            }
           }
         },
         config: {
@@ -254,7 +368,10 @@ const LiveAgent: React.FC = () => {
             speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName } }
             },
-            systemInstruction: systemInstruction
+            systemInstruction: systemInstruction,
+            // Enable Transcriptions - Empty objects as per documentation
+            inputAudioTranscription: {}, 
+            outputAudioTranscription: {},
         }
       });
       
@@ -264,8 +381,7 @@ const LiveAgent: React.FC = () => {
       console.error(error);
       addLog(`Failed to start: ${error.message}`);
       setStatus('Error');
-      // If error is related to API Key, prompt again
-      if (error.message && (error.message.includes('API key') || error.message.includes('401') || error.message.includes('403'))) {
+      if (error.message && (error.message.includes('API key') || error.message.includes('401'))) {
           setNeedsApiKey(true);
       }
     }
@@ -282,8 +398,11 @@ const LiveAgent: React.FC = () => {
         const minutes = Math.floor(durationSec / 60);
         const seconds = durationSec % 60;
 
-        // Capture Logs as Transcript
-        const sessionTranscript = logs.join('\n');
+        // Capture Final Transcripts if any pending
+        if (currentTurnInputRef.current) conversationHistoryRef.current.push(`User: ${currentTurnInputRef.current}`);
+        if (currentTurnOutputRef.current) conversationHistoryRef.current.push(`Agent: ${currentTurnOutputRef.current}`);
+
+        const sessionTranscript = conversationHistoryRef.current.join('\n');
 
         // Save Log
         const newLog: CallLog = {
@@ -296,16 +415,29 @@ const LiveAgent: React.FC = () => {
           sentiment: 'Positive', 
           agentId: testAgent?.id || 'demo_agent',
           recordingUrl: url,
-          transcript: sessionTranscript
+          transcript: sessionTranscript || 'No transcription available.'
         };
         addLog('Call saved to Dashboard.');
         addCallLog(newLog);
+        
+        // Clear refs
+        conversationHistoryRef.current = [];
+        currentTurnInputRef.current = '';
+        currentTurnOutputRef.current = '';
       };
     }
 
     if (cleanupRef.current) cleanupRef.current();
-    if (inputAudioContextRef.current) inputAudioContextRef.current.close();
-    if (outputAudioContextRef.current) outputAudioContextRef.current.close();
+    if (micSourceRef.current) micSourceRef.current.disconnect();
+    if (recordingDestRef.current) recordingDestRef.current.disconnect();
+
+    // Check state before closing to prevent "Cannot close a closed AudioContext" error
+    if (inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
+      inputAudioContextRef.current.close();
+    }
+    if (outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
+      outputAudioContextRef.current.close();
+    }
     
     setIsConnected(false);
     setStatus('Disconnected');
@@ -355,10 +487,10 @@ const LiveAgent: React.FC = () => {
              <div className="flex items-center space-x-4">
                 <div className="flex items-center text-red-400 animate-pulse">
                    <div className="w-2 h-2 bg-red-500 rounded-full mr-2"></div>
-                   <span className="text-xs uppercase font-bold tracking-wider">Recording</span>
+                   <span className="text-xs uppercase font-bold tracking-wider">REC</span>
                 </div>
                 <span className="text-slate-400 text-xs flex items-center">
-                  <Volume2 size={14} className="mr-1" /> PCM 24kHz Out / 16kHz In
+                  <Volume2 size={14} className="mr-1" /> PCM 24kHz
                 </span>
              </div>
            )}
@@ -390,13 +522,15 @@ const LiveAgent: React.FC = () => {
         </div>
 
         {/* Logs Overlay */}
-        <div className="absolute top-16 right-4 w-64 bg-black/50 backdrop-blur-sm rounded-lg p-3 font-mono text-xs text-green-400 border border-green-900/30 pointer-events-none">
+        <div className="absolute top-16 right-4 w-80 bg-black/60 backdrop-blur-sm rounded-lg p-3 font-mono text-xs text-green-400 border border-green-900/30 pointer-events-none max-h-96 overflow-y-auto">
             <div className="flex items-center mb-2 border-b border-green-900/30 pb-1">
-                <Terminal size={12} className="mr-2" /> System Logs
+                <Terminal size={12} className="mr-2" /> Live Transcripts
             </div>
-            {logs.map((log, i) => (
-                <div key={i} className="mb-1 opacity-80">{`> ${log}`}</div>
-            ))}
+            <div className="space-y-1">
+              {logs.map((log, i) => (
+                  <div key={i} className="opacity-90 break-words">{`> ${log}`}</div>
+              ))}
+            </div>
         </div>
 
         {/* Controls */}

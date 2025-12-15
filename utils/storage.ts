@@ -1,5 +1,4 @@
 import { Agent, CallLog, Campaign, SipConfig } from '../types';
-import { MOCK_AGENTS, MOCK_CALL_LOGS, MOCK_CAMPAIGNS } from '../constants';
 
 // Keys for LocalStorage
 const AGENTS_KEY = 'kredmint_agents';
@@ -17,13 +16,13 @@ const triggerUpdate = () => {
 // Helper to initialize data if empty
 const initData = () => {
   if (!localStorage.getItem(AGENTS_KEY)) {
-    localStorage.setItem(AGENTS_KEY, JSON.stringify(MOCK_AGENTS));
+    localStorage.setItem(AGENTS_KEY, JSON.stringify([]));
   }
   if (!localStorage.getItem(LOGS_KEY)) {
-    localStorage.setItem(LOGS_KEY, JSON.stringify(MOCK_CALL_LOGS));
+    localStorage.setItem(LOGS_KEY, JSON.stringify([]));
   }
   if (!localStorage.getItem(CAMPAIGNS_KEY)) {
-    localStorage.setItem(CAMPAIGNS_KEY, JSON.stringify(MOCK_CAMPAIGNS));
+    localStorage.setItem(CAMPAIGNS_KEY, JSON.stringify([]));
   }
 };
 

@@ -46,18 +46,18 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
       {/* Sidebar */}
       <aside className={`
-        fixed inset-y-0 left-0 z-30 w-64 bg-slate-900 text-white transform transition-transform duration-200 ease-in-out
+        fixed inset-y-0 left-0 z-30 w-64 bg-white text-slate-900 border-r border-slate-200 transform transition-transform duration-200 ease-in-out
         lg:relative lg:translate-x-0
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
       `}>
-        <div className="flex items-center justify-between h-16 px-6 border-b border-slate-800">
+        <div className="flex items-center justify-between h-16 px-6 border-b border-slate-100">
           <div className="flex items-center space-x-2">
-            <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
               <span className="font-bold text-white">K</span>
             </div>
-            <span className="text-xl font-bold tracking-tight">Kredmint.ai</span>
+            <span className="text-xl font-bold tracking-tight text-slate-900">Kredmint.ai</span>
           </div>
-          <button onClick={() => setIsMobileMenuOpen(false)} className="lg:hidden text-slate-400">
+          <button onClick={() => setIsMobileMenuOpen(false)} className="lg:hidden text-slate-500">
             <X size={24} />
           </button>
         </div>
@@ -71,8 +71,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               className={`
                 flex items-center px-4 py-3 rounded-lg transition-colors
                 ${isActive(item.path) 
-                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' 
-                  : 'text-slate-400 hover:bg-slate-800 hover:text-white'}
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200' 
+                  : 'text-slate-500 hover:bg-slate-50 hover:text-indigo-600'}
               `}
             >
               <item.icon size={20} className="mr-3" />
@@ -81,8 +81,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           ))}
         </nav>
 
-        <div className="absolute bottom-0 w-full p-4 border-t border-slate-800">
-          <button className="flex items-center w-full px-4 py-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
+        <div className="absolute bottom-0 w-full p-4 border-t border-slate-100">
+          <button className="flex items-center w-full px-4 py-2 text-slate-500 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors">
             <LogOut size={20} className="mr-3" />
             <span>Sign Out</span>
           </button>
