@@ -63,8 +63,8 @@ const Agents: React.FC = () => {
     setEditingAgent({
       name: '',
       voiceId: 'female_1',
-      initialMessage: 'Namaste! Main Kredmint se bol rahi hoon...',
-      instructions: KREDMINT_SYSTEM_PROMPT,
+      initialMessage: '', // Default greeting is now empty
+      instructions: '', // Start empty to avoid defaults
       status: 'Active'
     });
     setIsModalOpen(true);
@@ -263,13 +263,14 @@ const Agents: React.FC = () => {
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none font-mono text-sm h-64"
                     value={editingAgent?.instructions || ''}
                     onChange={(e) => setEditingAgent({...editingAgent, instructions: e.target.value})}
+                    placeholder="Enter strict instructions here. No default text will be added."
                   />
                   <div className="absolute top-2 right-2">
                     <button 
                       onClick={() => setEditingAgent({...editingAgent, instructions: KREDMINT_SYSTEM_PROMPT})}
                       className="text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded border border-indigo-200 hover:bg-indigo-100"
                     >
-                      Reset to Default
+                      Load Template
                     </button>
                   </div>
                 </div>
