@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useLocation, Link } from 'react-router-dom';
-import { GoogleGenAI, LiveServerMessage, Modality, Blob as GenAIBlob, HarmCategory, HarmBlockThreshold } from '@google/genai';
-import { Mic, MicOff, Volume2, Power, Terminal, ArrowLeft, User, Key, Trash2 } from 'lucide-react';
+import { GoogleGenAI, LiveServerMessage, Modality, Blob as GenAIBlob } from '@google/genai';
+import { Mic, MicOff, Volume2, Power, Terminal, ArrowLeft, User, Key, Trash2, AlertCircle } from 'lucide-react';
 import { KREDMINT_SYSTEM_PROMPT } from '../constants';
 import { addCallLog } from '../utils/storage';
 import { CallLog, Agent } from '../types';
@@ -47,7 +47,6 @@ async function decodeAudioData(
   sampleRate: number,
   numChannels: number,
 ): Promise<AudioBuffer> {
-  // Safe creation of Int16Array from Uint8Array source
   const dataInt16 = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
   const frameCount = dataInt16.length / numChannels;
   const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
@@ -61,7 +60,7 @@ async function decodeAudioData(
   return buffer;
 }
 
-// Voice Mapping Logic (Updated to supported voices: Puck, Charon, Kore, Fenrir, Zephyr)
+// Production-ready Voice Mapping
 const getGeminiVoiceName = (voiceId: string) => {
   switch(voiceId) {
     case 'female_1': return 'Kore';
@@ -69,6 +68,23 @@ const getGeminiVoiceName = (voiceId: string) => {
     case 'male_1': return 'Charon';
     default: return 'Puck';
   }
+};
+
+// Determine supported MIME type for MediaRecorder (Safari vs Chrome)
+const getSupportedMimeType = () => {
+  const types = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg;codecs=opus'
+  ];
+  for (const type of types) {
+    if (MediaRecorder.isTypeSupported(type)) {
+      return type;
+    }
+  }
+  console.warn("No preferred MIME type supported, defaulting to browser default.");
+  return ''; 
 };
 
 const LiveAgent: React.FC = () => {
@@ -89,11 +105,9 @@ const LiveAgent: React.FC = () => {
   const nextStartTimeRef = useRef<number>(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   
-  // Interruption Handling: Epoch tracks valid audio generation cycles.
-  // When interrupted, we increment epoch to invalidate pending async decodes.
   const audioEpochRef = useRef<number>(0);
   
-  // Recording Refs (Mixed)
+  // Recording Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const startTimeRef = useRef<number>(0);
@@ -108,35 +122,38 @@ const LiveAgent: React.FC = () => {
   const conversationHistoryRef = useRef<string[]>([]);
   const currentTurnInputRef = useRef<string>('');
   const currentTurnOutputRef = useRef<string>('');
+  
+  // Ref to track if we are currently disconnecting to prevent double cleanup
+  const isDisconnectingRef = useRef(false);
 
-  // Check for API Key on Mount
   useEffect(() => {
     const checkApiKey = async () => {
-        const win = window as any;
-        if (win.aistudio && win.aistudio.hasSelectedApiKey) {
-            const hasKey = await win.aistudio.hasSelectedApiKey();
-            setNeedsApiKey(!hasKey);
+        try {
+            const win = window as any;
+            if (win.aistudio && win.aistudio.hasSelectedApiKey) {
+                const hasKey = await win.aistudio.hasSelectedApiKey();
+                setNeedsApiKey(!hasKey);
+            }
+        } catch (e) {
+            console.error("Error checking API key state", e);
         }
     };
     checkApiKey();
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      // Ensure we clean up when navigating away
       handleDisconnect(true);
     };
   }, []);
 
   const addLog = (msg: string) => {
-    setLogs(prev => [...prev.slice(-4), msg]); // Keep last 5 logs for overlay
+    setLogs(prev => [...prev.slice(-4), msg]); 
   };
 
   const addConversationLog = (role: 'User' | 'Agent', text: string) => {
       const entry = `${role}: ${text}`;
       conversationHistoryRef.current.push(entry);
-      // Also show in the small terminal overlay if it's short
       if (text.length < 50) {
         addLog(entry);
       } else {
@@ -153,8 +170,11 @@ const LiveAgent: React.FC = () => {
   };
 
   const startSession = async () => {
-    if (isConnected) return;
+    if (isConnected || status === 'Connecting') return;
     
+    // Reset disconnection lock
+    isDisconnectingRef.current = false;
+
     try {
       if (needsApiKey) {
           await handleSelectKey();
@@ -165,34 +185,30 @@ const LiveAgent: React.FC = () => {
           throw new Error("API key not found. Please select a valid key.");
       }
 
-      // Cleanup any previous session debris just in case
       await handleDisconnect(false);
 
       setStatus('Connecting');
       addLog('--- New Session Started ---');
       addLog('Initializing audio contexts...');
 
-      // 1. Initialize Audio Contexts with Interactive Latency Hint
-      // Input: 16kHz for sending to model
-      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ 
-          sampleRate: 16000,
-          latencyHint: 'interactive'
-      });
-      // Output: Default rate (e.g. 48kHz) to work well with hardware and mix recording
-      const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({
-          latencyHint: 'interactive'
-      }); 
+      // 1. Initialize Audio Contexts
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const inputCtx = new AudioContextClass({ sampleRate: 16000, latencyHint: 'interactive' });
+      const outputCtx = new AudioContextClass({ latencyHint: 'interactive' }); 
       
-      // Explicitly resume contexts to ensure they are active (Autoplay policy)
-      if (inputCtx.state === 'suspended') await inputCtx.resume();
-      if (outputCtx.state === 'suspended') await outputCtx.resume();
+      try {
+        if (inputCtx.state === 'suspended') await inputCtx.resume();
+        if (outputCtx.state === 'suspended') await outputCtx.resume();
+      } catch (e) {
+        console.warn("AudioContext resume failed, user interaction may be required.");
+      }
 
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
       
-      // Output Node (Bot Speaker)
+      // Output Node
       const outputNode = outputCtx.createGain();
-      outputNode.connect(outputCtx.destination); // Connect to speakers
+      outputNode.connect(outputCtx.destination);
       outputNodeRef.current = outputNode;
 
       // 2. Get Microphone Stream
@@ -206,29 +222,41 @@ const LiveAgent: React.FC = () => {
           } 
       });
 
-      // 3. Setup Mixed Recording (Mic + Bot)
+      // 3. Setup Mixed Recording
       const recordingDest = outputCtx.createMediaStreamDestination();
       recordingDestRef.current = recordingDest;
 
-      // Add Bot Audio to Recording (Connect outputNode to recording destination)
       outputNode.connect(recordingDest);
 
-      // Add Mic Audio to Recording (Create source in outputCtx to mix it)
       const micSourceForRecord = outputCtx.createMediaStreamSource(stream);
       micSourceForRecord.connect(recordingDest);
       micSourceRef.current = micSourceForRecord;
 
-      // Initialize Recorder with Mixed Stream
-      const recorder = new MediaRecorder(recordingDest.stream);
+      // Initialize Recorder with Browser-Supported MimeType
+      const mimeType = getSupportedMimeType();
+      const options = mimeType ? { mimeType } : undefined;
+      
+      let recorder: MediaRecorder;
+      try {
+         recorder = new MediaRecorder(recordingDest.stream, options);
+      } catch (e) {
+         console.error("MediaRecorder creation failed with options, trying default", e);
+         recorder = new MediaRecorder(recordingDest.stream);
+      }
+      
       mediaRecorderRef.current = recorder;
       recordedChunksRef.current = [];
+      
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+        if (e.data.size > 0) {
+            recordedChunksRef.current.push(e.data);
+        }
       };
-      recorder.start();
+      
+      // Start with timeslice to ensure data isn't lost on crash
+      recorder.start(500); 
+      
       startTimeRef.current = Date.now();
-
-      // Reset Epoch
       audioEpochRef.current = 0;
 
       // 4. Initialize Gemini Client
@@ -237,18 +265,11 @@ const LiveAgent: React.FC = () => {
       // 5. Connect to Live API
       addLog(`Connecting to Agent: ${testAgent?.name || 'Default'}...`);
       
-      // STRICT PROMPT LOGIC & IDENTITY ENFORCEMENT
-      // If a specific agent is provided (Testing mode), use its instructions.
-      // If no agent is provided (Demo mode), use the default system prompt.
       const agentName = testAgent?.name || 'Sara';
       const baseInstruction = testAgent ? testAgent.instructions : KREDMINT_SYSTEM_PROMPT;
-
-      // DYNAMIC IDENTITY INJECTION
-      // Explicitly prepend the name to ensure the model knows who it is playing.
       let systemInstruction = `You are ${agentName}.\n\n${baseInstruction}`;
       systemInstruction += `\n\nIDENTITY RULE: Your name is "${agentName}". If asked for your name, you MUST answer "${agentName}".`;
       
-      // Only append the initial message trigger if specifically configured in the agent
       if (testAgent?.initialMessage) {
         systemInstruction += `\n\nStart the conversation by saying exactly: "${testAgent.initialMessage}"`;
       }
@@ -263,9 +284,8 @@ const LiveAgent: React.FC = () => {
             setStatus('Live');
             setIsConnected(true);
 
-            // Setup Input Stream Processing for sending to API (using inputCtx)
+            // Input Processing
             const source = inputCtx.createMediaStreamSource(stream);
-            // OPTIMIZATION: Buffer size 4096 ensures smooth audio
             const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
             
             scriptProcessor.onaudioprocess = (e) => {
@@ -297,66 +317,39 @@ const LiveAgent: React.FC = () => {
           onmessage: async (msg: LiveServerMessage) => {
              const serverContent = msg.serverContent;
 
-             // Handle Interruptions FIRST
              if (serverContent?.interrupted) {
               addLog('Model interrupted.');
-              
-              // 1. Invalidate any pending audio decodes from the previous turn
               audioEpochRef.current += 1;
-              
-              // 2. Stop immediate playback
               sourcesRef.current.forEach(s => {
-                  s.stop();
-                  try { s.disconnect(); } catch(e) {}
+                  try { s.stop(); s.disconnect(); } catch(e) {}
               });
               sourcesRef.current.clear();
-              
-              // 3. Reset playback timing cursor to 'now' so response feels immediate
               nextStartTimeRef.current = 0; 
-              
-              return; // usually interruption messages don't contain new audio yet
+              return; 
             }
 
-             // Handle Audio Output
              if (serverContent?.modelTurn?.parts) {
-                // Capture the current epoch at the START of processing this chunk
                 const currentEpoch = audioEpochRef.current;
-                
                 for (const part of serverContent.modelTurn.parts) {
                     if (part.inlineData?.data) {
                         const base64Audio = part.inlineData.data;
                         if (outputCtx && outputNode) {
-                            // Check before decode to avoid wasted effort
                             if (currentEpoch !== audioEpochRef.current) continue;
-
                             try {
                                 const audioBuffer = await decodeAudioData(
                                     decode(base64Audio),
                                     outputCtx,
-                                    24000, // Gemini Output Rate
+                                    24000, 
                                     1
                                 );
-                                
-                                // CRITICAL: Check if interruption happened while we were decoding
-                                if (currentEpoch !== audioEpochRef.current) {
-                                    return; // Discard stale audio
-                                }
-                                
+                                if (currentEpoch !== audioEpochRef.current) return;
                                 const source = outputCtx.createBufferSource();
                                 source.buffer = audioBuffer;
                                 source.connect(outputNode);
-                                
                                 const now = outputCtx.currentTime;
-                                
-                                // Schedule playback. 
-                                // If nextStartTimeRef is 0 (reset), Math.max(0, now) = now.
-                                // If nextStartTimeRef is in the future (queued), we schedule there.
-                                // If nextStartTimeRef is in the past (underrun), we schedule at 'now'.
                                 const startTime = Math.max(nextStartTimeRef.current, now);
-                                
                                 source.start(startTime);
                                 nextStartTimeRef.current = startTime + audioBuffer.duration;
-                                
                                 sourcesRef.current.add(source);
                                 source.onended = () => sourcesRef.current.delete(source);
                             } catch (e) {
@@ -367,7 +360,6 @@ const LiveAgent: React.FC = () => {
                 }
              }
 
-            // Handle Transcriptions
             const inputTranscript = serverContent?.inputTranscription?.text;
             if (inputTranscript) {
                currentTurnInputRef.current += inputTranscript;
@@ -378,55 +370,42 @@ const LiveAgent: React.FC = () => {
                 currentTurnOutputRef.current += outputTranscript;
             }
 
-            // Commit turns when complete (Live API turn detection)
             if (serverContent?.turnComplete) {
                 if (currentTurnInputRef.current.trim()) {
-                    addConversationLog('User', currentTurnInputRef.current);
+                    addConversationLog('User', currentTurnInputRef.current.trim());
                     currentTurnInputRef.current = '';
                 }
                 if (currentTurnOutputRef.current.trim()) {
-                    addConversationLog('Agent', currentTurnOutputRef.current);
+                    addConversationLog('Agent', currentTurnOutputRef.current.trim());
                     currentTurnOutputRef.current = '';
                 }
             }
           },
           onclose: (e) => {
-            addLog(`Session closed. Code: ${e.code}`);
-            handleDisconnect(false);
+            if (!isDisconnectingRef.current) {
+                addLog(`Session closed by server. Code: ${e.code}`);
+                handleDisconnect(false);
+            }
           },
           onerror: (err: any) => {
             console.error("Gemini Live API Error:", err);
             const message = err.message || 'Network error';
             addLog(`Error: ${message}`);
             setStatus('Error');
-            
-            // Hard disconnect on error to allow retry
             handleDisconnect(false);
-            
-            // Check for potential API key or Auth issues
             if (message.includes('401') || message.includes('403') || message.includes('API key')) {
                  setNeedsApiKey(true);
             }
           }
         },
         config: {
-            // FIXED: Must use Modality enum, not string
             responseModalities: [Modality.AUDIO], 
             speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName } }
             },
-            systemInstruction: systemInstruction,
-            generationConfig: {
-                temperature: 0.6,
-                maxOutputTokens: 300,
-                topP: 0.95,
-            },
-            safetySettings: [
-                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-            ]
+            systemInstruction: systemInstruction, // Using string format (Production Safe)
+            inputAudioTranscription: {}, 
+            outputAudioTranscription: {} 
         }
       });
       
@@ -444,52 +423,62 @@ const LiveAgent: React.FC = () => {
   };
 
   const handleDisconnect = async (clearAllLogs: boolean = false) => {
-    // 1. Stop Recorder & Save Log
+    // Prevent re-entry if already disconnecting
+    if (isDisconnectingRef.current) return;
+    isDisconnectingRef.current = true;
+
+    // 1. Capture any partial transcripts immediately
+    if (currentTurnInputRef.current.trim()) {
+        conversationHistoryRef.current.push(`User: ${currentTurnInputRef.current.trim()}`);
+    }
+    if (currentTurnOutputRef.current.trim()) {
+        conversationHistoryRef.current.push(`Agent: ${currentTurnOutputRef.current.trim()}`);
+    }
+
+    // 2. Stop Recorder & Save
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-      // We wrap the cleanup logic in a promise or simple execution
-      const saveAndReset = async () => {
-         const blob = new Blob(recordedChunksRef.current, { type: 'audio/webm' });
+      try {
+        mediaRecorderRef.current.stop();
+        // Give the recorder a moment to fire 'ondataavailable'
+        await new Promise(resolve => setTimeout(resolve, 300)); 
+      } catch (e) {
+          console.warn("Error stopping recorder", e);
+      }
+
+      const saveSessionData = async () => {
+        if (recordedChunksRef.current.length === 0) return;
+
+        // Detect mime type used
+        const mimeType = mediaRecorderRef.current?.mimeType || 'audio/webm';
+        const blob = new Blob(recordedChunksRef.current, { type: mimeType });
         const url = URL.createObjectURL(blob);
         const durationSec = Math.floor((Date.now() - startTimeRef.current) / 1000);
         const minutes = Math.floor(durationSec / 60);
         const seconds = durationSec % 60;
 
-        // Capture Final Transcripts if any pending
-        if (currentTurnInputRef.current) conversationHistoryRef.current.push(`User: ${currentTurnInputRef.current}`);
-        if (currentTurnOutputRef.current) conversationHistoryRef.current.push(`Agent: ${currentTurnOutputRef.current}`);
-
         const sessionTranscript = conversationHistoryRef.current.join('\n');
 
-        // Save Log if significant duration or transcript
-        if (durationSec > 2 || sessionTranscript.length > 0) {
+        // Only save if there was actual interaction
+        if (durationSec > 2 || sessionTranscript.length > 5) {
             let sentiment: 'Positive' | 'Neutral' | 'Negative' = 'Neutral';
             const apiKey = process.env.API_KEY;
 
+            // Attempt Sentiment Analysis
             if (apiKey && sessionTranscript.length > 20) {
-               addLog('Analyzing sentiment...');
+               addLog('Saving call details...');
                try {
                   const ai = new GoogleGenAI({ apiKey });
                   const response = await ai.models.generateContent({
                       model: 'gemini-2.5-flash',
-                      contents: `Analyze the sentiment of the User in this conversation transcript. 
-                      Context: This is a call with an AI Voice Agent.
-                      
-                      Transcript:
-                      ${sessionTranscript}
-                      
-                      Classify as:
-                      - Positive: User was satisfied, happy, or achieved their goal.
-                      - Negative: User was frustrated, angry, or the call failed.
-                      - Neutral: Information exchange only, no strong emotion.
-                      
-                      Return ONLY the word (Positive, Neutral, Negative).`,
+                      contents: `Analyze sentiment of User:
+                      Transcript: ${sessionTranscript.substring(0, 2000)}
+                      Return ONLY: Positive, Neutral, or Negative.`,
                   });
                   const text = response.text?.trim().toLowerCase();
                   if (text?.includes('positive')) sentiment = 'Positive';
                   else if (text?.includes('negative')) sentiment = 'Negative';
                } catch (e) {
-                   console.error("Sentiment analysis failed", e);
+                   console.warn("Sentiment analysis skipped due to error");
                }
             }
 
@@ -505,25 +494,31 @@ const LiveAgent: React.FC = () => {
               recordingUrl: url,
               transcript: sessionTranscript || 'No transcription available.'
             };
-            addLog(`Call saved to Dashboard. (Sentiment: ${sentiment})`);
             addCallLog(newLog);
+            addLog('Call saved successfully.');
         }
         
-        // Clear refs for next session
+        // Cleanup refs
         conversationHistoryRef.current = [];
         currentTurnInputRef.current = '';
         currentTurnOutputRef.current = '';
+        recordedChunksRef.current = [];
       };
       
-      // Execute immediately as we don't want to wait for onstop event if we are tearing down
-      saveAndReset();
+      await saveSessionData();
     }
 
     if (cleanupRef.current) cleanupRef.current();
-    if (micSourceRef.current) micSourceRef.current.disconnect();
-    if (recordingDestRef.current) recordingDestRef.current.disconnect();
+    
+    // Cleanup nodes
+    try {
+        if (micSourceRef.current) micSourceRef.current.disconnect();
+        if (recordingDestRef.current) recordingDestRef.current.disconnect();
+        sourcesRef.current.forEach(s => { try { s.stop(); } catch(e){} });
+        sourcesRef.current.clear();
+    } catch(e) { console.warn("Node cleanup warning", e); }
 
-    // Safely close audio contexts
+    // Cleanup Contexts
     try {
         if (inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
           await inputAudioContextRef.current.close();
@@ -531,10 +526,9 @@ const LiveAgent: React.FC = () => {
         if (outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
           await outputAudioContextRef.current.close();
         }
-    } catch(e) { console.error("Error closing audio context", e); }
+    } catch(e) { console.warn("Context closure warning", e); }
     
     setIsConnected(false);
-    // Only set status to disconnected if we were not in error state to allow user to see error message
     setStatus(prev => prev === 'Error' ? 'Error' : 'Disconnected');
     
     if (clearAllLogs) {
@@ -543,8 +537,10 @@ const LiveAgent: React.FC = () => {
     
     setCurrentVolume(0);
     nextStartTimeRef.current = 0;
-    sourcesRef.current.clear();
-    audioEpochRef.current = 0; // Reset epoch
+    audioEpochRef.current = 0; 
+    
+    // Unlock
+    isDisconnectingRef.current = false;
   };
 
   return (
@@ -613,12 +609,19 @@ const LiveAgent: React.FC = () => {
                 )}
             </div>
             
-            <p className="mt-8 text-slate-400 text-lg font-light text-center max-w-md">
-              {status === 'Disconnected' && "Click 'Connect' to start testing."}
-              {status === 'Connecting' && "Establishing secure voice channel..."}
-              {status === 'Live' && (testAgent?.initialMessage ? "Bot is starting..." : "Listening... Speak naturally.")}
-              {status === 'Error' && "Connection failed. Please check your network and API Key, then try again."}
-            </p>
+            <div className="mt-8 text-center max-w-md">
+                 <p className="text-slate-400 text-lg font-light">
+                  {status === 'Disconnected' && "Click 'Connect' to start testing."}
+                  {status === 'Connecting' && "Establishing secure voice channel..."}
+                  {status === 'Live' && (testAgent?.initialMessage ? "Bot is starting..." : "Listening... Speak naturally.")}
+                  {status === 'Error' && "Connection failed."}
+                </p>
+                {status === 'Error' && needsApiKey && (
+                    <p className="text-amber-500 text-sm mt-2 flex items-center justify-center">
+                        <AlertCircle size={14} className="mr-1" /> API Key required. Please click connect again to select one.
+                    </p>
+                )}
+            </div>
         </div>
 
         {/* Logs Overlay */}
@@ -647,7 +650,11 @@ const LiveAgent: React.FC = () => {
           {!isConnected ? (
              <button 
                onClick={startSession}
-               className={`text-white px-8 py-4 rounded-full font-bold shadow-lg transform transition active:scale-95 flex items-center ${needsApiKey ? 'bg-amber-600 hover:bg-amber-700' : 'bg-green-600 hover:bg-green-700'}`}
+               disabled={status === 'Connecting'}
+               className={`text-white px-8 py-4 rounded-full font-bold shadow-lg transform transition active:scale-95 flex items-center 
+                 ${needsApiKey ? 'bg-amber-600 hover:bg-amber-700' : 'bg-green-600 hover:bg-green-700'}
+                 ${status === 'Connecting' ? 'opacity-50 cursor-not-allowed' : ''}
+               `}
              >
                {needsApiKey ? (
                    <>

@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Search, Filter, X, FileText, Download, Play, MessageSquare, CheckSquare, Square, RefreshCw, Activity } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Search, Filter, X, FileText, Download, Play, MessageSquare, CheckSquare, Square, RefreshCw, Activity, ArrowUp } from 'lucide-react';
 import { getCallLogs, DATA_UPDATE_EVENT } from '../utils/storage';
 import { CallLog } from '../types';
 
@@ -29,22 +29,20 @@ const CallLogs: React.FC = () => {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [selectedColumns, setSelectedColumns] = useState<string[]>(EXPORT_COLUMNS.map(c => c.key));
 
+  // Scroll State
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+
   const fetchLogs = () => {
     const allLogs = getCallLogs();
     setLogs(allLogs);
   };
 
   useEffect(() => {
-    // Initial fetch
     fetchLogs();
-
-    // Listen for real-time updates
     const handleUpdate = () => fetchLogs();
     window.addEventListener(DATA_UPDATE_EVENT, handleUpdate);
-
-    return () => {
-      window.removeEventListener(DATA_UPDATE_EVENT, handleUpdate);
-    };
+    return () => window.removeEventListener(DATA_UPDATE_EVENT, handleUpdate);
   }, []);
 
   useEffect(() => {
@@ -70,6 +68,30 @@ const CallLogs: React.FC = () => {
     setFilteredLogs(result);
   }, [logs, searchQuery, statusFilter, sentimentFilter]);
 
+  // Handle Scroll Event
+  useEffect(() => {
+    const handleScroll = () => {
+        if (tableContainerRef.current) {
+            const { scrollTop } = tableContainerRef.current;
+            setShowScrollButton(scrollTop > 200);
+        }
+    };
+
+    const container = tableContainerRef.current;
+    if (container) {
+        container.addEventListener('scroll', handleScroll);
+    }
+    return () => {
+        if (container) container.removeEventListener('scroll', handleScroll);
+    };
+  }, []);
+
+  const scrollToTop = () => {
+      if (tableContainerRef.current) {
+          tableContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+  };
+
   const toggleColumn = (key: string) => {
     if (selectedColumns.includes(key)) {
       setSelectedColumns(selectedColumns.filter(c => c !== key));
@@ -83,32 +105,23 @@ const CallLogs: React.FC = () => {
   };
 
   const executeCSVExport = () => {
-    // 1. Create Header Row
     const headers = EXPORT_COLUMNS
       .filter(col => selectedColumns.includes(col.key))
-      .map(col => `"${col.label}"`) // Wrap in quotes
+      .map(col => `"${col.label}"`)
       .join(',');
 
-    // 2. Create Data Rows
     const rows = filteredLogs.map(log => {
       return EXPORT_COLUMNS
         .filter(col => selectedColumns.includes(col.key))
         .map(col => {
           let value = log[col.key as keyof CallLog] || '';
-          
-          // Clean up string data for CSV format
-          // Escape double quotes by doubling them (" -> "")
           const stringValue = String(value).replace(/"/g, '""');
-          
-          // Return wrapped in quotes to handle commas and newlines within data
           return `"${stringValue}"`;
         })
         .join(',');
     }).join('\n');
 
     const csvContent = `${headers}\n${rows}`;
-
-    // 3. Trigger Download
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -117,7 +130,6 @@ const CallLogs: React.FC = () => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    
     setIsExportModalOpen(false);
   };
 
@@ -133,8 +145,8 @@ const CallLogs: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="space-y-6 h-[calc(100vh-6rem)] md:h-[calc(100vh-8rem)] flex flex-col relative">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Call Logs</h1>
           <p className="text-slate-500">Detailed history of all AI agent interactions.</p>
@@ -157,8 +169,7 @@ const CallLogs: React.FC = () => {
         </div>
       </div>
 
-      {/* Filters with Black Background Inputs */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4">
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 flex-shrink-0">
         <div className="flex-1 relative">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={20} />
           <input 
@@ -170,7 +181,6 @@ const CallLogs: React.FC = () => {
           />
         </div>
         
-        {/* Status Filter */}
         <div className="w-full md:w-48 relative">
            <Filter className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={18} />
            <select 
@@ -186,7 +196,6 @@ const CallLogs: React.FC = () => {
            </select>
         </div>
 
-        {/* Sentiment Filter (New) */}
         <div className="w-full md:w-48 relative">
            <Activity className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={18} />
            <select 
@@ -202,25 +211,27 @@ const CallLogs: React.FC = () => {
         </div>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm text-slate-600">
-             {/* Header Updated to Black background with White text */}
-            <thead className="bg-slate-900 text-xs uppercase font-semibold text-white">
+      {/* Table Container - Uses flex-1 to fill remaining space */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col flex-1 min-h-0 relative">
+        <div 
+            ref={tableContainerRef}
+            className="overflow-x-auto overflow-y-auto flex-1 h-full scrollbar-thin scrollbar-thumb-indigo-200 scrollbar-track-transparent hover:scrollbar-thumb-indigo-400"
+        >
+          <table className="w-full text-left text-sm text-slate-600 relative">
+            <thead className="bg-slate-900 text-xs uppercase font-semibold text-white sticky top-0 z-10 shadow-md">
               <tr>
-                <th className="px-6 py-4">Customer</th>
-                <th className="px-6 py-4">Agent ID</th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4">Duration</th>
-                <th className="px-6 py-4">Sentiment</th>
-                <th className="px-6 py-4">Timestamp</th>
-                <th className="px-6 py-4">Action</th>
+                <th className="px-6 py-4 bg-slate-900">Customer</th>
+                <th className="px-6 py-4 bg-slate-900">Agent ID</th>
+                <th className="px-6 py-4 bg-slate-900">Status</th>
+                <th className="px-6 py-4 bg-slate-900">Duration</th>
+                <th className="px-6 py-4 bg-slate-900">Sentiment</th>
+                <th className="px-6 py-4 bg-slate-900">Timestamp</th>
+                <th className="px-6 py-4 bg-slate-900">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
               {filteredLogs.map((log) => (
-                <tr key={log.id} className="hover:bg-slate-50">
+                <tr key={log.id} className="hover:bg-slate-50 transition-colors">
                   <td className="px-6 py-4">
                     <div className="font-medium text-slate-900">{log.customerName}</div>
                     <div className="text-xs text-slate-400">{log.phoneNumber}</div>
@@ -249,7 +260,7 @@ const CallLogs: React.FC = () => {
                   <td className="px-6 py-4">
                     <button 
                       onClick={() => setSelectedLog(log)}
-                      className="text-indigo-600 hover:text-indigo-900 font-medium text-xs flex items-center"
+                      className="text-indigo-600 hover:text-indigo-900 font-medium text-xs flex items-center hover:bg-indigo-50 px-2 py-1 rounded"
                     >
                        View Details
                     </button>
@@ -269,10 +280,19 @@ const CallLogs: React.FC = () => {
             </tbody>
           </table>
         </div>
-        <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 text-xs text-slate-500 flex justify-between items-center">
+        <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 text-xs text-slate-500 flex justify-between items-center flex-shrink-0">
           <span>Showing {filteredLogs.length} entries</span>
         </div>
       </div>
+
+      {/* Floating Scroll to Top Button */}
+      <button 
+        onClick={scrollToTop}
+        className={`fixed bottom-8 right-8 p-3 bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700 transition-all transform duration-300 z-50 ${showScrollButton ? 'translate-y-0 opacity-100' : 'translate-y-10 opacity-0 pointer-events-none'}`}
+        title="Scroll to Top"
+      >
+        <ArrowUp size={24} />
+      </button>
 
       {/* Export Options Modal */}
       {isExportModalOpen && (

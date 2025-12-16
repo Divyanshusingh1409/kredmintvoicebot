@@ -46,23 +46,31 @@ const Campaigns: React.FC = () => {
       const selectedFile = e.target.files[0];
       setFile(selectedFile);
       
-      // Real file reading
       const reader = new FileReader();
       reader.onload = (event) => {
-        const text = event.target?.result as string;
-        // Simple Split by new line for demo purposes, assume standard CSV/Text format
-        const lines = text.split(/\r\n|\n/).filter(line => line.trim() !== '');
-        
-        // Basic mapping (Assumes header row, so skipping index 0 if > 1 line, else just taking all)
-        const contacts: Contact[] = lines.slice(1).map((line, index) => {
-            const parts = line.split(',');
-            return {
-                name: parts[0] || `Contact ${index + 1}`,
-                phoneNumber: parts[1] || ''
-            };
-        }).filter(c => c.phoneNumber); // Simple validation
+        try {
+            const text = event.target?.result as string;
+            // Robust splitting for various line endings (Windows/Unix/Mac)
+            const lines = text.split(/\r\n|\n|\r/).filter(line => line.trim() !== '');
+            
+            // Basic mapping with validation
+            const contacts: Contact[] = lines.slice(1).map((line, index) => {
+                const parts = line.split(',');
+                // Ensure we have at least a phone number candidate
+                const phone = parts[1] ? parts[1].trim() : (parts[0] && /[\d\+\-\(\)\s]{5,}/.test(parts[0]) ? parts[0].trim() : '');
+                const name = parts[0] ? parts[0].trim() : `Contact ${index + 1}`;
+                
+                return {
+                    name: name || `Contact ${index+1}`,
+                    phoneNumber: phone
+                };
+            }).filter(c => c.phoneNumber && c.phoneNumber.length > 3); // Basic length check for phone
 
-        setUploadedContacts(contacts.length > 0 ? contacts : []);
+            setUploadedContacts(contacts.length > 0 ? contacts : []);
+        } catch (error) {
+            console.error("Failed to parse CSV", error);
+            alert("Error parsing file. Please ensure it is a valid CSV.");
+        }
       };
       reader.readAsText(selectedFile);
     }
